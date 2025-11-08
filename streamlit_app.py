@@ -1,53 +1,77 @@
 import streamlit as st
-from openai import OpenAI
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import re
+import io
 
-# Show title and description.
-st.title("📄 Document question answering")
-st.write(
-    "Upload a document below and ask a question about it – GPT will answer! "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-)
+st.set_page_config(page_title="Waveform Viewer", layout="wide")
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+st.title("📈 Waveform Viewer (WFM / CSV)")
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+uploaded_file = st.file_uploader("Upload your WFM or CSV file", type=["wfm", "csv"])
 
-    # Let the user upload a file via `st.file_uploader`.
-    uploaded_file = st.file_uploader(
-        "Upload a document (.txt or .md)", type=("txt", "md")
-    )
+if uploaded_file is not None:
+    filename = uploaded_file.name.lower()
 
-    # Ask the user for a question via `st.text_area`.
-    question = st.text_area(
-        "Now ask a question about the document!",
-        placeholder="Can you give me a short summary?",
-        disabled=not uploaded_file,
-    )
+    # --- CASE 1: CSV ---
+    if filename.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        st.success(f"Loaded {len(df)} rows from CSV file.")
+        st.write(df.head())
 
-    if uploaded_file and question:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(df.iloc[:, 0], df.iloc[:, 1], color="blue", linewidth=1)
+        ax.set_xlabel(df.columns[0])
+        ax.set_ylabel(df.columns[1])
+        ax.set_title("Waveform Visualization")
+        ax.grid(True)
+        st.pyplot(fig)
 
-        # Process the uploaded file and question.
-        document = uploaded_file.read().decode()
-        messages = [
-            {
-                "role": "user",
-                "content": f"Here's a document: {document} \n\n---\n\n {question}",
-            }
-        ]
+    # --- CASE 2: WFM ---
+    elif filename.endswith(".wfm"):
+        st.info("Reading WFM file...")
 
-        # Generate an answer using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            stream=True,
+        data = uploaded_file.read()
+
+        # Skip text header
+        ascii_part = re.match(b'[\x20-\x7E\r\n\t]+', data)
+        header_end = len(ascii_part.group(0)) if ascii_part else 512
+        payload = data[header_end:]
+
+        dtype = np.float32
+        size = len(payload) // np.dtype(dtype).itemsize
+        usable = payload[: size * np.dtype(dtype).itemsize]
+        values = np.frombuffer(usable, dtype=dtype)
+
+        if len(values) % 2 != 0:
+            values = values[:-1]
+
+        pairs = values.reshape(-1, 2)
+        time = pairs[:, 0]
+        amplitude = pairs[:, 1]
+        df = pd.DataFrame({"Time (s)": time, "Amplitude (V)": amplitude})
+
+        st.success(f"Decoded {len(df)} waveform samples from WFM file.")
+        st.write(df.head())
+
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax.plot(time, amplitude, color="blue", linewidth=1)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Amplitude (V)")
+        ax.set_title("Waveform Visualization")
+        ax.grid(True)
+        st.pyplot(fig)
+
+        # Option to download as CSV
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        st.download_button(
+            label="💾 Download as CSV",
+            data=csv_buffer.getvalue(),
+            file_name="waveform_converted.csv",
+            mime="text/csv",
         )
 
-        # Stream the response to the app using `st.write_stream`.
-        st.write_stream(stream)
+else:
+    st.warning("Please upload a .wfm or .csv file to visualize.")
